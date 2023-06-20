@@ -1,18 +1,35 @@
+import os
+import sys
 import queue
 import threading
 import gradio as gr
 from uuid import uuid4
 from pathlib import Path
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Tuple, Type, Optional, Callable
 
+import gradio as gr
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import load_tools, initialize_agent
 from langchain.agents import AgentType
+from langchain.requests import Requests
 from langchain.chains.base import Chain
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from dotenv import load_dotenv
+
+sys.path.append(str(Path(__file__).parent.joinpath("opsgpt-prompt")))
+
+from opsgpt import (
+    MetacubeToolkit,
+    SearchToolkit,
+    AlertseerToolkit,
+    RiskseerToolkit,
+    DataseerToolkit,    
+    TicketseerToolkit,
+    BizseerToolkit,
+    OpsGPTAgent
+) 
 
 WEBUI_TITLE = '# OpsGPT'
 
@@ -28,6 +45,21 @@ BIZSEER_TOOLKITS = [
     "riskseer",
     "dataseer",
 ]
+
+BIZSEER_TOOLKITS_MAP: Dict[str, Tuple[Type[BizseerToolkit]]] = {
+    name: clzs
+    for name, clzs in zip(
+        BIZSEER_TOOLKITS,
+        [
+            (MetacubeToolkit, SearchToolkit),
+            (TicketseerToolkit, ),
+            (AlertseerToolkit, ),
+            (RiskseerToolkit, ),
+            (DataseerToolkit, ),
+            (TicketseerToolkit, )
+        ]
+    )
+}
 
 AVAILABLE_MODES = BUILTIN_MODES + BIZSEER_TOOLKITS
 
@@ -160,8 +192,25 @@ def create_human_as_tool_agent(callback: BaseCallbackHandler, input_func: Callab
         verbose=True,
     )
 
-def create_bizseer_agents(toolkit_name: str) -> Chain:
-    raise NotImplementedError
+def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler) -> Chain:
+    llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback])
+
+    auth_token = os.environ["BIZSEER_TOKEN"]
+    print(auth_token)
+    requests = Requests(headers={"Authorization": auth_token})
+
+    clzs = BIZSEER_TOOLKITS_MAP[toolkit_name]
+    tools = []
+    for clz in clzs:
+        tools.extend(
+            clz.from_llm(llm, requests=requests).get_tools()
+        )
+    
+    return OpsGPTAgent.from_llm_and_tools(
+        llm=llm,
+        tools=tools,
+        verbose=True
+    )
 
 with gr.Blocks() as demo:
     gr.Markdown(WEBUI_TITLE)
