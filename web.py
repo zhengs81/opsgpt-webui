@@ -1,15 +1,31 @@
 import queue
 import threading
-import gradio as gr
+import sys
+import os
 from pathlib import Path
+from typing import Dict, Tuple, Type
 
+import gradio as gr
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import load_tools, initialize_agent
 from langchain.agents import AgentType
+from langchain.requests import Requests
 from langchain.chains.base import Chain
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from dotenv import load_dotenv
+
+sys.path.append(Path(__file__).parent.joinpath("opsgpt-prompt"))
+from opsgpt import (
+    MetacubeToolkit,
+    SearchToolkit,
+    AlertseerToolkit,
+    RiskseerToolkit,
+    DataseerToolkit,    
+    TicketseerToolkit,
+    BizseerToolkit,
+    OpsGPTAgent
+) 
 
 WEBUI_TITLE = '# OpsGPT'
 
@@ -20,6 +36,21 @@ BIZSEER_TOOLKITS = [
     "riskseer",
     "dataseer"
 ]
+
+BIZSEER_TOOLKITS_MAP: Dict[str, Tuple[Type[BizseerToolkit]]] = {
+    name: clzs
+    for name, clzs in zip(
+        BIZSEER_TOOLKITS,
+        [
+            (MetacubeToolkit, SearchToolkit),
+            (TicketseerToolkit),
+            (AlertseerToolkit),
+            (RiskseerToolkit),
+            (DataseerToolkit),
+            (TicketseerToolkit)
+        ]
+    )
+}
 
 # 创建新任务
 # 查询当前任务状态: 忙碌 / 空闲
@@ -137,7 +168,23 @@ def get_answer(query, history, mode):
 
 
 def create_bizseer_agents(toolkit_name: str) -> Chain:
-    raise NotImplementedError
+    llm = OpenAI(model_name="text-davinci-003")
+
+    auth_token = os.environ["BIZSEER_TOKEN"]
+    requests = Requests(headers={"Authorization": auth_token})
+
+    clzs = BIZSEER_TOOLKITS_MAP[toolkit_name]
+    tools = []
+    for clz in clzs:
+        tools.extned(
+            clz.from_llm(llm, requests=requests).get_tools()
+        )
+    
+    return OpsGPTAgent.from_llm_and_tools(
+        llm=llm,
+        tools=tools,
+        verbose=True
+    )
 
 
 with gr.Blocks() as demo:
