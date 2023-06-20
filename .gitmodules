@@ -1,0 +1,3 @@
+[submodule "opsgpt-prompt"]
+	path = opsgpt-prompt
+	url = git@code.bizseer.com:mlops/algorithm/opsgpt-prompt.git
