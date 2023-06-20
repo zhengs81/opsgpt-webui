@@ -1,30 +1,35 @@
 import queue
 import threading
 import gradio as gr
+from uuid import uuid4
 from pathlib import Path
+from typing import List, Dict, Optional, Callable
 
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import load_tools, initialize_agent
 from langchain.agents import AgentType
 from langchain.chains.base import Chain
+from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from dotenv import load_dotenv
 
 WEBUI_TITLE = '# OpsGPT'
+
+BUILTIN_MODES = [
+    "direct_chat",
+    "human_as_tool",
+]
 
 BIZSEER_TOOLKITS = [
     "metacube",
     "ticketseer",
     "alertseer",
     "riskseer",
-    "dataseer"
+    "dataseer",
 ]
 
-# 创建新任务
-# 查询当前任务状态: 忙碌 / 空闲
-# 终止当前任务
-# 给定输入，继续当前任务 (直接通过 Queue 给出)
+AVAILABLE_MODES = BUILTIN_MODES + BIZSEER_TOOLKITS
 
 request_queue = queue.Queue()
 response_queue = queue.Queue()
@@ -46,83 +51,88 @@ class CustomizedCallbackHandler(StreamingStdOutCallbackHandler):
         self.out.put(['delta', token])
 
 class Task(threading.Thread):
-    req: queue.Queue
-    res: queue.Queue
-    input: str
+    agent: Chain
+    reply: queue.Queue
+    msg: str
 
-    def __init__(self, input, req, res):
+    def __init__(self, agent: Chain, reply: queue.Queue, msg: str):
         super().__init__()
-        self.input = input
-        self.req = req
-        self.res = res
-        # llm_0 = OpenAI(streaming=True, callbacks=[CustomizedCallbackManager(self.res)], temperature=0)
-        llm = ChatOpenAI(model_name='gpt-4', streaming=True, callbacks=[CustomizedCallbackHandler(self.res)], temperature=0)
-        
-        def get_input() -> str:
-            self.res.put(['end'])
-            return self.req.get()
-        
-        tools = load_tools(
-            ["human"], 
-            llm=llm,
-            input_func=get_input,
-        )
-        self.agent_chain = initialize_agent(
-            tools,
-            llm,
-            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-            verbose=True,
-        )
+        self.agent = agent
+        self.reply = reply
+        self.msg = msg
 
     def run(self):
-        self.agent_chain.run(self.input)
-        self.res.put(['end'])
+        self.agent.run(self.msg)
+        self.reply.put(['end'])
+        
+class TaskController:
+    reply: queue.Queue()
+    
+    _mode: str
+    _agent: Optional[Chain]
 
-class TaskController(threading.Thread):
-    cur_req: queue.Queue
-    cur_task: threading.Thread
+    _task: Optional[Task]
+    _msgbuf: Optional[queue.Queue]
 
     def __init__(self):
         super().__init__()
-        self.cur_req = None
-        self.cur_task = None
+        self.reply = queue.Queue()
+        
+        self._mode = 'unknown'
+        self._agent = None
 
-    def launch(self, input, task_type: str, task_args=None):
-        self.cur_req = queue.Queue()
-        task = Task(input, self.cur_req, response_queue)
-        self.cur_task = task
-        task.start()
+        self._task = None
+        self._msgbuf = None
+
+    def ensure_mode(self, name):
+        if self._mode == name:
+            return 
+        
+        self._mode = name
+
+        callback = CustomizedCallbackHandler(self.reply)
+
+        if name in BUILTIN_MODES:
+            if True: # name == 'human_as_tool':
+                self._msgbuf = queue.Queue()
+                def input_func():
+                    self.reply.put(['end'])
+                    return self._msgbuf.get()
+                self._agent = create_human_as_tool_agent(callback, input_func)
+        
+        elif name in BIZSEER_TOOLKITS:
+            self._agent = create_bizseer_agents(name, callback)
+
+    def launch(self, msg: str):
+        self._task = Task(self._agent, self.reply, msg)
+        self._task.start()
 
     def proceed(self, msg: str):
-        self.cur_req.put(msg)
+        if self._msgbuf is not None:
+            self._msgbuf.put(msg)
 
-    def cancel(self):
-        pass
+    def is_idle(self) -> bool:
+        return self._task is None or not self._task.is_alive()
 
-    def query_status(self):
-        response_queue.put(['status', 'IDLE' if self.cur_task is None or not self.cur_task.is_alive() else 'BUSY'])
+task_controller_map: Dict[str, TaskController] = {}
 
-    def run(self):
-        while True:
-            item = request_queue.get()
-            print(item)
-            cmd, *args = item
-            if hasattr(self, cmd):
-                getattr(self, cmd)(*args)
+def get_task_controller(session_id: str) -> TaskController:
+    if task_controller_map.get(session_id) is None:
+        task_controller_map[session_id] = TaskController()    
+    return task_controller_map[session_id]
 
-controller = TaskController()
-controller.start()
-
-def get_answer(query, history, mode):
+def get_answer(query: str, history: List[List[str]], mode: str, session_id: str):
     history.append([query, None])
     yield history, ""
-    request_queue.put(['query_status'])
-    if response_queue.get()[1] == 'IDLE':
-        request_queue.put(['launch', query, 'test1'])
+    taskctl = get_task_controller(session_id)
+    taskctl.ensure_mode(mode)
+    if taskctl.is_idle():
+        taskctl.launch(query)
     else:
-        request_queue.put(['proceed', query])
+        taskctl.proceed(query)
+
     while True:
-        cmd, *args = response_queue.get()
+        cmd, *args = taskctl.reply.get()
         if cmd == 'new_msg':
             if history[-1][-1] is not None:
                 history.append([None, None])
@@ -135,31 +145,47 @@ def get_answer(query, history, mode):
             break
     return history, ""
 
+def create_human_as_tool_agent(callback: BaseCallbackHandler, input_func: Callable) -> Chain:
+    llm = ChatOpenAI(model_name='gpt-4', streaming=True, callbacks=[callback], temperature=0)
+            
+    tools = load_tools(
+        ["human"], 
+        llm=llm,
+        input_func=input_func,
+    )
+    return initialize_agent(
+        tools,
+        llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True,
+    )
 
 def create_bizseer_agents(toolkit_name: str) -> Chain:
     raise NotImplementedError
 
-
 with gr.Blocks() as demo:
     gr.Markdown(WEBUI_TITLE)
+
+    session_id = gr.State(lambda: str(uuid4()))
+    
     with gr.Tab("对话"):
         with gr.Row():
             with gr.Column(scale=10):
                 chatbot = gr.Chatbot(elem_id="chat-box", show_label=False).style(height=600)
                 query = gr.Textbox(show_label=False, placeholder="请输入提问内容，按回车进行提交").style(container=False)
             with gr.Column(scale=5):
-                mode = gr.Radio(["LLM 对话"],
-                                label="请选择使用模式",
-                                value="LLM 对话")
+                mode = gr.Dropdown(AVAILABLE_MODES,
+                                   label="请选择使用模式",
+                                   value=BUILTIN_MODES[0],
+                                   multiselect=False)
             query.submit(get_answer,
-                        [query, chatbot, mode],
+                        [query, chatbot, mode, session_id],
                         [chatbot, query])
-
 
 demo.queue(concurrency_count=3)
 
 if __name__ == '__main__':
     demo.launch(server_name='0.0.0.0',
-            server_port=17861,
-            share=False,
-            inbrowser=False)
+                server_port=7860,
+                share=False,
+                inbrowser=False)
