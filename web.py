@@ -1,15 +1,25 @@
-import os
 import queue
 import threading
 import gradio as gr
+from pathlib import Path
 
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import load_tools, initialize_agent
 from langchain.agents import AgentType
+from langchain.chains.base import Chain
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from dotenv import load_dotenv
 
 WEBUI_TITLE = '# OpsGPT'
+
+BIZSEER_TOOLKITS = [
+    "metacube",
+    "ticketseer",
+    "alertseer",
+    "riskseer",
+    "dataseer"
+]
 
 # 创建新任务
 # 查询当前任务状态: 忙碌 / 空闲
@@ -19,9 +29,8 @@ WEBUI_TITLE = '# OpsGPT'
 request_queue = queue.Queue()
 response_queue = queue.Queue()
 
-os.environ["OPENAI_API_BASE"] = "https://api.chatanywhere.com.cn/v1"
-os.environ["OPENAI_API_KEY"] = "sk-PRJRgGWFxGpRzO3MyxfTPbUh14HcDGii5geSVfm4ImI46ykh"
-    
+load_dotenv(Path(__file__).parent.joinpath(".env"))
+
 class CustomizedCallbackHandler(StreamingStdOutCallbackHandler):
     res: queue.Queue
 
@@ -125,6 +134,11 @@ def get_answer(query, history, mode):
         elif cmd == 'end':
             break
     return history, ""
+
+
+def create_bizseer_agents(toolkit_name: str) -> Chain:
+    raise NotImplementedError
+
 
 with gr.Blocks() as demo:
     gr.Markdown(WEBUI_TITLE)
