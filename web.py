@@ -34,7 +34,7 @@ from opsgpt import (
 WEBUI_TITLE = '# OpsGPT'
 
 BUILTIN_MODES = [
-    "direct_chat",
+    # "direct_chat",
     "human_as_tool",
 ]
 
@@ -125,7 +125,7 @@ class TaskController:
         callback = CustomizedCallbackHandler(self.reply)
 
         if name in BUILTIN_MODES:
-            if True: # name == 'human_as_tool':
+            if name == 'human_as_tool':
                 self._msgbuf = queue.Queue()
                 def input_func():
                     self.reply.put(['end'])
@@ -178,7 +178,7 @@ def get_answer(query: str, history: List[List[str]], mode: str, session_id: str)
     return history, ""
 
 def create_human_as_tool_agent(callback: BaseCallbackHandler, input_func: Callable) -> Chain:
-    llm = ChatOpenAI(model_name='gpt-4', streaming=True, callbacks=[callback], temperature=0)
+    llm = ChatOpenAI(model_name='gpt-4-0613', streaming=True, callbacks=[callback], temperature=0)
             
     tools = load_tools(
         ["human"], 
@@ -196,7 +196,6 @@ def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler) -> C
     llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback])
 
     auth_token = os.environ["BIZSEER_TOKEN"]
-    print(auth_token)
     requests = Requests(headers={"Authorization": auth_token})
 
     clzs = BIZSEER_TOOLKITS_MAP[toolkit_name]
@@ -216,25 +215,32 @@ with gr.Blocks() as demo:
     gr.Markdown(WEBUI_TITLE)
 
     session_id = gr.State(lambda: str(uuid4()))
-    
+
     with gr.Tab("对话"):
         with gr.Row():
             with gr.Column(scale=10):
-                chatbot = gr.Chatbot(elem_id="chat-box", show_label=False).style(height=600)
-                query = gr.Textbox(show_label=False, placeholder="请输入提问内容，按回车进行提交").style(container=False)
+                chatbot = gr.Chatbot(elem_id="chat-box", show_label=False)
+                chatbot.style(height=600)
+                query = gr.Textbox(show_label=False, placeholder="请输入提问内容，按回车进行提交")
+                query.style(container=False)
             with gr.Column(scale=5):
                 mode = gr.Dropdown(AVAILABLE_MODES,
                                    label="请选择使用模式",
                                    value=BUILTIN_MODES[0],
                                    multiselect=False)
+                clear_btn = gr.Button(value="清空对话历史")
+
             query.submit(get_answer,
                         [query, chatbot, mode, session_id],
                         [chatbot, query])
+            
+            clear_btn.click(lambda: [], [], [chatbot])
+
 
 demo.queue(concurrency_count=3)
 
 if __name__ == '__main__':
     demo.launch(server_name='0.0.0.0',
-                server_port=7860,
+                server_port=9860,
                 share=False,
                 inbrowser=False)
