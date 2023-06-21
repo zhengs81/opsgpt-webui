@@ -10,10 +10,12 @@ from typing import List, Dict, Tuple, Type, Optional, Callable
 import gradio as gr
 from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
-from langchain.agents import load_tools, initialize_agent
-from langchain.agents import AgentType
+from langchain.agents import load_tools
+from langchain.agents import AgentExecutor
 from langchain.requests import Requests
+from langchain.tools.base import BaseTool
 from langchain.chains.base import Chain
+from langchain.base_language import BaseLanguageModel
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from dotenv import load_dotenv
@@ -31,7 +33,18 @@ from opsgpt import (
     OpsGPTAgent
 ) 
 
-WEBUI_TITLE = '# OpsGPT'
+WEBUI_TITLE = '# Bizseer BMBOps'
+
+CUSTOMIZED_CSS = """
+.gradio-container-3-34-0 .scroll-hide::-webkit-scrollbar {
+  display: block;
+  width: 5px;
+  height: 10px;
+}
+.gradio-container-3-34-0 .scroll-hide::-webkit-scrollbar-thumb {
+  background: lightgray;
+}
+"""
 
 BUILTIN_MODES = [
     # "direct_chat",
@@ -61,7 +74,7 @@ BIZSEER_TOOLKITS_MAP: Dict[str, Tuple[Type[BizseerToolkit]]] = {
     )
 }
 
-AVAILABLE_MODES = BUILTIN_MODES + BIZSEER_TOOLKITS
+AVAILABLE_MODES = BIZSEER_TOOLKITS
 
 request_queue = queue.Queue()
 response_queue = queue.Queue()
@@ -101,7 +114,7 @@ class TaskController:
     reply: queue.Queue()
     
     _mode: str
-    _agent: Optional[Chain]
+    _agent: Optional[AgentExecutor]
 
     _task: Optional[Task]
     _msgbuf: Optional[queue.Queue]
@@ -124,16 +137,12 @@ class TaskController:
 
         callback = CustomizedCallbackHandler(self.reply)
 
-        if name in BUILTIN_MODES:
-            if name == 'human_as_tool':
-                self._msgbuf = queue.Queue()
-                def input_func():
-                    self.reply.put(['end'])
-                    return self._msgbuf.get()
-                self._agent = create_human_as_tool_agent(callback, input_func)
+        self._msgbuf = queue.Queue()
+        def input_func():
+            self.reply.put(['end'])
+            return self._msgbuf.get()
         
-        elif name in BIZSEER_TOOLKITS:
-            self._agent = create_bizseer_agents(name, callback)
+        self._agent = create_bizseer_agents(name, callback, input_func)
 
     def launch(self, msg: str):
         self._task = Task(self._agent, self.reply, msg)
@@ -177,22 +186,17 @@ def get_answer(query: str, history: List[List[str]], mode: str, session_id: str)
             break
     return history, ""
 
-def create_human_as_tool_agent(callback: BaseCallbackHandler, input_func: Callable) -> Chain:
+
+def create_human_as_tools(callback: BaseCallbackHandler, input_func: Callable) -> List[BaseTool]:
     llm = ChatOpenAI(model_name='gpt-4-0613', streaming=True, callbacks=[callback], temperature=0)
-            
-    tools = load_tools(
+    return load_tools(
         ["human"], 
         llm=llm,
         input_func=input_func,
     )
-    return initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-    )
 
-def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler) -> Chain:
+
+def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler, input_func: Callable) -> Chain:
     llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback])
 
     auth_token = os.environ["BIZSEER_TOKEN"]
@@ -205,13 +209,27 @@ def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler) -> C
             clz.from_llm(llm, requests=requests).get_tools()
         )
     
+    tools.extend(create_human_as_tools(callback=callback, input_func=input_func))
+    
     return OpsGPTAgent.from_llm_and_tools(
         llm=llm,
         tools=tools,
         verbose=True
     )
 
-with gr.Blocks() as demo:
+def load_agent(session_id: str, mode: str):
+    taskctl = get_task_controller(session_id)
+    taskctl.ensure_mode(mode)
+    
+    def simple_name(name):
+        return name.split(".")[-1].strip()
+    
+    return [
+        [simple_name(tool.name), tool.description.strip()] for tool in taskctl._agent.tools
+    ]
+
+
+with gr.Blocks(css=CUSTOMIZED_CSS) as demo:
     gr.Markdown(WEBUI_TITLE)
 
     session_id = gr.State(lambda: str(uuid4()))
@@ -223,10 +241,16 @@ with gr.Blocks() as demo:
                 chatbot.style(height=600)
                 query = gr.Textbox(show_label=False, placeholder="请输入提问内容，按回车进行提交")
                 query.style(container=False)
+                table = gr.Dataframe(
+                    headers=["工具", "描述"],
+                    label="当前Agent可能使用的工具",
+                    interactive=False,
+                    wrap=True
+                )
             with gr.Column(scale=5):
                 mode = gr.Dropdown(AVAILABLE_MODES,
-                                   label="请选择使用模式",
-                                   value=BUILTIN_MODES[0],
+                                   label="请选择工具库",
+                                   value=AVAILABLE_MODES[0],
                                    multiselect=False)
                 clear_btn = gr.Button(value="清空对话历史")
 
@@ -235,8 +259,9 @@ with gr.Blocks() as demo:
                         [chatbot, query])
             
             clear_btn.click(lambda: [], [], [chatbot])
+            mode.change(load_agent, inputs=[session_id, mode], outputs=[table])
 
-
+    demo.load(load_agent, inputs=[session_id, mode], outputs=[table])
 demo.queue(concurrency_count=3)
 
 if __name__ == '__main__':
