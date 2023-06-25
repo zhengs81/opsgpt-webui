@@ -209,7 +209,10 @@ class TaskController:
             self.reply.put(['end'])
             return self._msgbuf.get()
         
-        self._agent = create_bizseer_agents(name, input_func)
+        def prompt_func(_: str):
+            self.reply.put(['new_hidden'])
+        
+        self._agent = create_bizseer_agents(name, input_func, prompt_func)
 
     def launch(self, msg: str):
         self._task = Task(self._agent, self.reply, msg)
@@ -278,16 +281,15 @@ def get_answer(query: str, full_history: List[ChatPair], mode: str, session_id: 
     return history, "", full_history
 
 
-def create_human_as_tools(input_func: Callable) -> List[BaseTool]:
-    llm = ChatOpenAI(model_name='gpt-4-0613', streaming=True, temperature=0)
+def create_human_as_tools(input_func: Callable, prompt_func: Callable[[str], None]) -> List[BaseTool]:
     return load_tools(
         ["human"], 
-        llm=llm,
         input_func=input_func,
+        prompt_func=prompt_func
     )
 
 
-def create_bizseer_agents(toolkit_name: str, input_func: Callable) -> Chain:
+def create_bizseer_agents(toolkit_name: str, input_func: Callable, prompt_func: Callable[[str], None]) -> Chain:
     llm = OpenAI(model_name="text-davinci-003", streaming=True, max_tokens=-1)
 
     auth_token = fetch_login_token()
@@ -300,7 +302,7 @@ def create_bizseer_agents(toolkit_name: str, input_func: Callable) -> Chain:
             clz.from_llm(llm, requests=requests).get_tools()
         )
     
-    tools.extend(create_human_as_tools(input_func=input_func))
+    tools.extend(create_human_as_tools(input_func=input_func, prompt_func=prompt_func))
     
     return OpsGPTAgent.from_llm_and_tools(
         llm=llm,
