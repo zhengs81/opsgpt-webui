@@ -19,6 +19,7 @@ from langchain.base_language import BaseLanguageModel
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from dotenv import load_dotenv
+from utils.fetch_login_token import fetch_login_token
 
 sys.path.append(str(Path(__file__).parent.joinpath("opsgpt-prompt")))
 
@@ -199,7 +200,7 @@ def create_human_as_tools(callback: BaseCallbackHandler, input_func: Callable) -
 def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler, input_func: Callable) -> Chain:
     llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback], max_tokens=-1)
 
-    auth_token = os.environ["BIZSEER_TOKEN"]
+    auth_token = fetch_login_token()
     requests = Requests(headers={"Authorization": auth_token})
 
     clzs = BIZSEER_TOOLKITS_MAP[toolkit_name]
