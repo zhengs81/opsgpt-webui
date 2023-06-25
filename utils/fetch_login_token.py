@@ -7,6 +7,9 @@ from pathlib import Path
 load_dotenv(Path(__file__).parent.joinpath(".env"))
 
 def fetch_login_token():
+    local_token = os.environ["BIZSEER_TOKEN"]
+    if local_token.startswith("Bearer"):
+        return local_token
     url = os.environ["BIZSEER_LOGIN_URL"]
     username = os.environ["BIZSEER_LOGIN_USERNAME"]
     password = os.environ["BIZSEER_LOGIN_PASSWORD"]
@@ -24,7 +27,7 @@ def fetch_login_token():
     'Connection': 'keep-alive'
     }
 
-    response = requests.request("POST", url, headers=headers, data=payload)
+    response = requests.request("POST", url, headers=headers, data=payload, timeout=5)
     
     token = "Bearer " + response.json()['data']['token']
 
