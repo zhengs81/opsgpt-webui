@@ -197,7 +197,7 @@ def create_human_as_tools(callback: BaseCallbackHandler, input_func: Callable) -
 
 
 def create_bizseer_agents(toolkit_name: str, callback: BaseCallbackHandler, input_func: Callable) -> Chain:
-    llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback])
+    llm = OpenAI(model_name="text-davinci-003", streaming=True, callbacks=[callback], max_tokens=-1)
 
     auth_token = os.environ["BIZSEER_TOKEN"]
     requests = Requests(headers={"Authorization": auth_token})
