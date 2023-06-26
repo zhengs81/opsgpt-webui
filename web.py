@@ -159,7 +159,13 @@ class CustomizedCallbackHandler(StreamingStdOutCallbackHandler):
     ) -> None:
         """Run on agent end."""
         self.out.put(['delta', finish.log + "\n"])
-        self.out.put(['new_display'])
+        
+        parent_run_key = "parent_run_id"
+        if parent_run_key in kwargs and kwargs[parent_run_key] is not None:
+            self.out.put(['new_hidden'])
+        else:
+            self.out.put(['new_display'])
+
         self.out.put(['delta', finish.return_values["output"]])
 
 
